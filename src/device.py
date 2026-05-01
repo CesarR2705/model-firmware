@@ -136,10 +136,10 @@ class Device:
     #         self.humidity = self.dht.humidity()
 
     async def read_misc_loop(self):
-        while True:
-            await asyncio.sleep(2)
-            if self.din != self.config.get("AIR_DIN_INVERT", False):
-                self.smokeDetected = self.din.value != self.config.get("AIR_DIN_INVERT", False)
+    while True:
+        await asyncio.sleep(2)
+        if self.din:
+            self.smokeDetected = self.din.value != self.config.get("AIR_DIN_PIN_INVERT", False)
 
             # if self.adc:
             #     self.airQuality = self.adc.read_u16() * 3.3 / (65535)
