@@ -145,10 +145,18 @@ class Device:
             #     self.airQuality = self.adc.read_u16() * 3.3 / (65535)
 
     async def update_sensors_loop(self):
-        while True:
-            await asyncio.sleep(0.25)
-            if self.din:
-                self.smokeDetected = self.din.value != self.config.get("AIR_DIN_INVERT", False)
+    while True:
+        await asyncio.sleep(0.25)
+        if self.din:
+            self.smokeDetected = self.din.value != self.config.get("AIR_DIN_PIN_INVERT", False)
+
+        readings = {"id": self.config["id"]}
+        if self.din:
+            readings["smokeDetected"] = self.smokeDetected
+        await self.gql.query({
+            "query": update_sensors_query,
+            "variables": readings
+        })
             # if self.adc:
             #     self.airQuality = self.adc.read_u16() * 3.3 / (65535)
             # if self.dht:
