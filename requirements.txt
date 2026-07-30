@@ -1,3 +1,5 @@
 rpi_ws281x
 adafruit-circuitpython-neopixel
 RPi.GPIO
+adafruit-circuitpython-ads1x15
+adafruit-blinka

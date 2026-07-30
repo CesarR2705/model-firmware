@@ -1,6 +1,11 @@
 import asyncio
 import digitalio
 
+try:
+    from adafruit_ads1x15.analog_in import AnalogIn
+except ImportError:
+    AnalogIn = None
+
 led_update_sub = """
 subscription ($id: Int = 0) {
   ledStateChanged(id: $id)
@@ -29,23 +34,15 @@ mutation ($id: Int!, $airQuality: Float, $humidity: Float = 1.5, $occupied: Bool
 """
 
 class Device:
-    def __init__(self, config, gql, segments):
+    def __init__(self, config, gql, segments, adc=None):
         self.config = config
         self.gql = gql
         self.segments = []
-        # self.temperature = None
-        # self.humidity = None
         self.smokeDetected = None
-        # self.occupied = None
-        # self.airQuality = None
+        self.airQuality = None
 
         for name in config["LED_SEGMENTS"]:
             self.segments.append(segments[name])
-
-        # if "DHT_PIN" in config:
-        #     self.dht = DHT22(machine.Pin(config["DHT_PIN"]))
-        # else:
-        #     self.dht = None
 
         if "AIR_DIN_PIN" in config:
             self.din = digitalio.DigitalInOut(config["AIR_DIN_PIN"])
@@ -53,48 +50,25 @@ class Device:
         else:
             self.din = None
 
-        # if "AIR_ADC_PIN" in config:
-        #     self.adc = machine.ADC(config["AIR_ADC_PIN"])
-        # else:
-        #     self.adc = None
+        if "AIR_ADC_CHANNEL" in config and adc is not None and AnalogIn is not None:
+            self.chan = AnalogIn(adc, config["AIR_ADC_CHANNEL"])
+        else:
+            self.chan = None
 
-        # if "PRESENCE_PIN" in config:
-        #     self.presence_pin = machine.Pin(config["PRESENCE_PIN"], machine.Pin.IN)
-        # else:
-        #     self.presence_pin = None
-        
-        # if "PRESENCE_UART_CONTROLLER" in config:
-        #     print(f'{config["PRESENCE_UART_CONTROLLER"]} {config["PRESENCE_TX_PIN"]} {config["PRESENCE_RX_PIN"]}')
-        #     # self.presence_uart = machine.UART(config["PRESENCE_UART_CONTROLLER"], tx=config["PRESENCE_TX_PIN"], rx=config["PRESENCE_RX_PIN"])
-        #     self.presence = hilink.HiLink(config["PRESENCE_UART_CONTROLLER"], tx=config["PRESENCE_TX_PIN"], rx=config["PRESENCE_RX_PIN"])
-        # else:
-        #     self.presence_uart = None
-        #     self.presence = None
+        self.r0 = config.get("MQ9_R0", 10.0)
+        self.rl = config.get("MQ9_RL", 10.0)
+        self.divider = config.get("AIR_ADC_DIVIDER", 2.0)
 
-    # async def config_presence(self):
-    #     if self.presence is None:
-    #         return
-    #     # print("configuring")
-    #     # await self.presence.enable_config()
-    #     # print("setting resolution")
-    #     # await self.presence.set_resolution(hilink.HiLink.SHORT_RESOLUTION)
-    #     # print("setting running config")
-    #     # # await self.presence.run_automatic_config()
-    #     # # each gate is about 7.87 inches
-    #     # print("setting max")
-    #     # await self.presence.set_max_gate_and_duration(1, 0, 1)
-    #     # await self.presence.set_gate_sensitivity(0, 99, 100)
-    #     # await self.presence.set_gate_sensitivity(1, 99, 100)
-    #     # await self.presence.set_gate_sensitivity(2, 100, 100)
-    #     # await self.presence.set_gate_sensitivity(3, 100, 100)
-    #     # await self.presence.set_gate_sensitivity(4, 100, 100)
-    #     # await self.presence.set_gate_sensitivity(5, 100, 100)
-    #     # await self.presence.set_gate_sensitivity(6, 100, 100)
-    #     # await self.presence.set_gate_sensitivity(7, 100, 100)
-    #     # await self.presence.set_gate_sensitivity(8, 100, 100)
-    #     # print("disabling config")
-    #     # await self.presence.disable_config()
-    #     print("configured")
+    def read_gas_ppm(self):
+        if self.chan is None:
+            return None
+        v_sensor = self.chan.voltage * self.divider
+        if v_sensor <= 0.01 or v_sensor >= 5.0:
+            return None
+        rs = (5.0 - v_sensor) / v_sensor * self.rl
+        ratio = rs / self.r0
+        ppm = 1000.0 * (ratio ** -2.09)
+        return max(0.0, min(1000.0, ppm))   # clamp to schema's 0–1000 limit
 
     def led_update_state(self, state):
         if state == "OFF":
@@ -128,62 +102,28 @@ class Device:
             state = s["data"]["ledStateChanged"]
             self.led_update_state(state)
 
-    # async def read_dht_loop(self):
-    #     while self.dht:
-    #         await asyncio.sleep(5)  # DO NOT MEASURE MORE OFTEN THAN EVERY 2 SECONDS
-    #         self.dht.measure()
-    #         self.temperature = self.dht.temperature()
-    #         self.humidity = self.dht.humidity()
-
     async def read_misc_loop(self):
-    while True:
-        await asyncio.sleep(2)
-        if self.din:
-            self.smokeDetected = self.din.value != self.config.get("AIR_DIN_PIN_INVERT", False)
-
-            # if self.adc:
-            #     self.airQuality = self.adc.read_u16() * 3.3 / (65535)
+        while True:
+            await asyncio.sleep(2)
+            if self.din:
+                self.smokeDetected = self.din.value != self.config.get("AIR_DIN_PIN_INVERT", False)
+            if self.chan:
+                self.airQuality = self.read_gas_ppm()
 
     async def update_sensors_loop(self):
-    while True:
-        await asyncio.sleep(0.25)
-        if self.din:
-            self.smokeDetected = self.din.value != self.config.get("AIR_DIN_PIN_INVERT", False)
+        while True:
+            await asyncio.sleep(1)     # was 0.25 — 4 Hz floods the subscription
+            if self.din:
+                self.smokeDetected = self.din.value != self.config.get("AIR_DIN_PIN_INVERT", False)
+            if self.chan:
+                self.airQuality = self.read_gas_ppm()
 
-        readings = {"id": self.config["id"]}
-        if self.din:
-            readings["smokeDetected"] = self.smokeDetected
-        await self.gql.query({
-            "query": update_sensors_query,
-            "variables": readings
-        })
-            # if self.adc:
-            #     self.airQuality = self.adc.read_u16() * 3.3 / (65535)
-            # if self.dht:
-            #     self.dht.measure()
-            #     self.temperature = self.dht.temperature()
-            #     self.humidity = self.dht.humidity()
-            
-            
             readings = {"id": self.config["id"]}
-            # if self.dht:
-            #     readings["temperature"] = self.temperature
-            #     readings["humidity"] = self.humidity
             if self.din:
                 readings["smokeDetected"] = self.smokeDetected
-            # if self.adc:
-            #     readings["airQuality"] = self.airQuality
-            # if self.presence:
-            #     readings["occupied"] = self.presence.ticker > 5
-            # print(readings)
+            if self.chan and self.airQuality is not None:
+                readings["airQuality"] = round(self.airQuality, 1)
             await self.gql.query({
                 "query": update_sensors_query,
                 "variables": readings
             })
-
-    # async def presence_handler(self):
-    #     if self.presence:
-    #         asyncio.create_task(self.presence.handler())
-    #         asyncio.sleep(1)
-    #         await self.config_presence()
-        
