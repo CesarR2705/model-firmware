@@ -42,7 +42,7 @@ devices = (
     {
         "id": 0,
         "LED_SEGMENTS": ["HALL0"],
-        "AIR_DIN_PIN": board.D24,
+        "AIR_DIN_PIN": board.D21,
         "AIR_DIN_PIN_INVERT": True,
         "AIR_ADC_CHANNEL": 0,
         "AIR_ADC_DIVIDER": 2.0,   # your resistor divider ratio
